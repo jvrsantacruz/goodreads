@@ -1,0 +1,41 @@
+name: Goodreads Sync
+
+on:
+  schedule:
+    # Runs at 00:00 and 12:00 UTC
+    - cron: '3 0,12 * * *'
+  workflow_dispatch:
+  # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Only run sync on schedule or manual trigger, not on push
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: build
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate lists
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -v ${{ github.workspace }}:/data \
+            -v ${{ github.workspace }}:/render \
+            ghcr.io/jvrsantacruz/goodreads:latest \
+            render read \
+              --data-dir /data \
+              --listas-dir /data \
+              --books-dir /data \
+              --config-json "${{ secrets.GOODREADS_CONFIG }}"
