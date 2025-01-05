@@ -1,0 +1,77 @@
+name: Goodreads Sync
+
+on:
+  # Allow manual trigger
+  workflow_dispatch:
+  schedule:
+    # Runs at 00:00 and 12:00 UTC
+    - cron: '3 0,12 * * *'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    # Only run sync on schedule or manual trigger, not on push
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print read list
+        env: 
+          CONFIG: ${{ secrets.GOODREADS_CONFIG }}
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -v ${{ github.workspace }}:/data \
+            -v ${{ github.workspace }}:/render \
+            ghcr.io/jvrsantacruz/goodreads:latest \
+            list read \
+              --config-json "$CONFIG" \
+              --data-dir /data \
+              | tee output.md
+
+      - name: Generate read list
+        env: 
+          CONFIG: ${{ secrets.GOODREADS_CONFIG }}
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -v ${{ github.workspace }}:/data \
+            -v ${{ github.workspace }}:/render \
+            ghcr.io/jvrsantacruz/goodreads:latest \
+            render read \
+              --config-json "$CONFIG" \
+              --data-dir /data \
+              --listas-dir /render \
+              --books-dir /render
+
+      - name: Generate want list
+        env: 
+          CONFIG: ${{ secrets.GOODREADS_CONFIG }}
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/app \
+            -v ${{ github.workspace }}:/data \
+            -v ${{ github.workspace }}:/render \
+            ghcr.io/jvrsantacruz/goodreads:latest \
+            render want \
+              --config-json "$CONFIG" \
+              --data-dir /data \
+              --listas-dir /render \
+              --books-dir /render
+
+      - name: See render results
+        run: ls -lR
+
+      - name: See render results file
+        run: cat *.md
