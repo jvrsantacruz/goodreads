@@ -3,9 +3,9 @@ name: Goodreads Sync
 on:
   # Allow manual trigger
   workflow_dispatch:
-  # schedule:
-  #   # Runs at 00:00 and 12:00 UTC
-  #   - cron: '3 0,12 * * *'
+  schedule:
+    # Runs at 00:00 and 12:00 UTC
+    - cron: '3 0,12 * * *'
 
 jobs:
   sync:
@@ -59,3 +59,11 @@ jobs:
 
       - name: See render results file
         run: cat *.md
+
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: 'Update Goodreads lists'
+          file_pattern: '*.md'
+          commit_user_name: 'github-actions[bot]'
+          commit_user_email: 'github-actions[bot]@users.noreply.github.com'
