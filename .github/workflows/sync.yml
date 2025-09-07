@@ -3,9 +3,9 @@ name: Goodreads Sync
 on:
   # Allow manual trigger
   workflow_dispatch:
-  schedule:
-    # Runs at 00:00 and 12:00 UTC
-    - cron: '3 0,12 * * *'
+  # schedule:
+  #   # Runs at 00:00 and 12:00 UTC
+  #   - cron: '3 0,12 * * *'
 
 jobs:
   sync:
