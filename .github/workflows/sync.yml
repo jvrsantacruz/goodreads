@@ -10,8 +10,6 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # Only run sync on schedule or manual trigger, not on push
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
       packages: read
@@ -25,20 +23,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Print read list
-        env: 
-          CONFIG: ${{ secrets.GOODREADS_CONFIG }}
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/app \
-            -v ${{ github.workspace }}:/data \
-            -v ${{ github.workspace }}:/render \
-            ghcr.io/jvrsantacruz/goodreads:latest \
-            list read \
-              --config-json "$CONFIG" \
-              --data-dir /data \
-              | tee output.md
 
       - name: Generate read list
         env: 
