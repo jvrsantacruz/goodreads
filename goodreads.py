@@ -94,6 +94,11 @@ class Book:
             name = name.split(delimiter, 1)[0]
         return name.translate(table).strip()
 
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data.pop('rating', None)
+        return data
+
 
 def first(sequence):
     for item in sequence:
@@ -254,13 +259,16 @@ def extract_yaml_doc(path: Path) -> dict:
     return data
 
 
+FILE_TEXT_SEPARATOR_SUFFIX = "----\n"
+
+
 def extract_file_text(path: Path) -> str:
-    separator = "----\n"
+    separator = FILE_TEXT_SEPARATOR_SUFFIX
     all_text = path.read_text()
     if not separator in all_text:
         return all_text
     with path.open() as stream:
-        markers = "\n".join(takewhile(lambda line: line != separator, stream))
+        markers = "\n".join(takewhile(lambda line: not line.endswith(separator), stream))
         text = stream.read().strip()
     return text
 
@@ -279,14 +287,14 @@ def save_file(data: dict[str, Any], markers: str, path: Path):
         yaml.dump(data, stream)
         print("---", file=stream, end="\n\n")
         print(markers, file=stream, end="\n\n")
-        print(f"----\n", file=stream)
+        print(FILE_TEXT_SEPARATOR_SUFFIX, file=stream)
         print(text, file=stream)
 
 
 def print_list(url: str, id: str, args):
     print(
         json.dumps(
-            [asdict(book) for book in get_list(url, id, args.data_dir)],
+            [book.to_dict() for book in get_list(url, id, args.data_dir)],
             default=str,
         )
     )
@@ -298,7 +306,7 @@ def render_list(url: str, name: str, id: str, args):
     for book in books:
         path = args.books_dir / (book.name + ".md")
         if path.exists():
-            book_data = asdict(book)
+            book_data = book.to_dict()
             book_data["author"] = f"[[Autores/{book.author}|{book.author}]]"
             book_data["read_date"] = book.read_date.date().isoformat()
             save_file(book_data, "#libro", path)
