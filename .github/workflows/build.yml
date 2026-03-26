@@ -5,9 +5,11 @@ name: Goodreads Build
   workflow_dispatch:
   # Build image on pushes to master/main
   push:
+    paths:
+      - 'Dockerfile'
+      - '*.py'
     branches:
       - master
-      - main
 
 jobs:
   build:
