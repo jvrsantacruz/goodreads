@@ -58,13 +58,13 @@ jobs:
         run: ls -lR
 
       - name: See render results file
-        run: cat *.md
+        run: cat *.md || echo "No markdown files to display"
 
       - name: Clone target repository
         uses: actions/checkout@v4
         with:
           repository: jvrsantacruz/me
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.ME_REPO_TOKEN }}
           path: me-repo
 
       - name: Copy generated files to target repo
