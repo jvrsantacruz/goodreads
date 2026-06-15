@@ -2,8 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Read @README.md
-
 ## Commands
 
 ### Run without Docker
@@ -25,6 +23,9 @@ python goodreads.py render want --listas-dir Listas/ --books-dir Libros/
 ### Config
 `config.json` (git-ignored) must exist with Goodreads RSS feed URLs, or pass `--config-json '{"read_url":...,"want_url":...}'` on the CLI.
 
+### Tests
+There are no automated tests.
+
 ## Architecture
 
 The entire application is a single file: `goodreads.py`.
@@ -41,8 +42,26 @@ The entire application is a single file: `goodreads.py`.
 
 **Render behavior:**
 - Only updates `.md` files that already exist in `--books-dir`; does not create new book files
-- Each book file has YAML front matter + a `----` separator + free-form notes text
-- `save_file()` merges new metadata with any existing YAML front matter, preserving user-added keys and the notes text below the separator
+- `Book.name` (used as the filename stem) strips everything after `:` or `(` and removes `:`, `/`, `\` characters
+- Author fields are written as Obsidian wiki-links: `[[Autores/{author}|{author}]]`
+- Summary lists use Obsidian wiki-link syntax: `[[date]] ᐧ [[dir/book|book]]`
+
+**Book file format** (critical for `save_file` / `extract_yaml_doc`):
+```
+---
+key: value
+...
+---
+
+#libro
+
+----
+
+<free-form notes>
+```
+- YAML block ends with `...` (ruamel `explicit_end=True`); `extract_yaml_doc` reads lines until `...\n`
+- `extract_file_text` reads past the `----\n`-suffixed line and returns everything after it
+- `save_file()` merges new metadata with existing YAML front matter (existing keys win), preserving the notes text
 
 **Docker mounts (run.sh):**
 - `./data` → `/data` (cache)
