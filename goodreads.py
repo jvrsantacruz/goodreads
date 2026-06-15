@@ -162,7 +162,7 @@ def json_deserializer(data: dict) -> dict:
 
 
 def get_cache_file(id: str, data_dir: Path) -> Path:
-    return Path(f"data/books-{id}-{datetime.now().date().isoformat()}.json")
+    return data_dir / f"books-{id}-{datetime.now().date().isoformat()}.json"
 
 
 def get_cached(id: str, data_dir: Path) -> list[Book] | None:
