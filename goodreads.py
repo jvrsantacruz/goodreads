@@ -15,6 +15,7 @@ from functools import cached_property, partial
 from itertools import count, takewhile
 from pathlib import Path
 from typing import Any, Iterable, Union
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from xml.dom.minidom import Document, Element, Text
 from xml.dom.pulldom import parse
 
@@ -73,7 +74,7 @@ class Book:
         return cls(
             **{
                 "title": entry["title"],
-                "url": entry["link"],
+                "url": strip_utm(entry["link"]),
                 "book_id": entry["book_id"],
                 "pages": to_int(entry["num_pages"]),
                 "author": entry["author_name"],
@@ -96,13 +97,24 @@ class Book:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        data.pop('rating', None)
+        data.pop("rating", None)
         return data
 
 
 def first(sequence):
     for item in sequence:
         return item
+
+
+def strip_utm(url: str) -> str:
+    """Remove utm_medium/utm_source tracking params, keeping the rest of the URL."""
+    parts = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query)
+        if key not in ("utm_medium", "utm_source")
+    ]
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def to_date(text: str) -> datetime | None:
@@ -221,10 +233,12 @@ def write_ratings_list(books: list[Book], path: Path, dir: Path):
         )
         for book in books:
             print(
-                f"- [[{book.read_date.date().isoformat()}]]"
-                f" ᐧ [[{dir.name}/{book.name}|{book.name}]]"
-                if book.read_date
-                else "",
+                (
+                    f"- [[{book.read_date.date().isoformat()}]]"
+                    f" ᐧ [[{dir.name}/{book.name}|{book.name}]]"
+                    if book.read_date
+                    else ""
+                ),
                 file=stream,
             )
 
@@ -268,7 +282,9 @@ def extract_file_text(path: Path) -> str:
     if not separator in all_text:
         return all_text
     with path.open() as stream:
-        markers = "\n".join(takewhile(lambda line: not line.endswith(separator), stream))
+        markers = "\n".join(
+            takewhile(lambda line: not line.endswith(separator), stream)
+        )
         text = stream.read().strip()
     return text
 
@@ -351,7 +367,7 @@ def help(parser: argparse.ArgumentParser, args):
 
 def main():
     common_options = argparse.ArgumentParser(add_help=False)
-    common_options.add_argument('--config-json')
+    common_options.add_argument("--config-json")
     common_options.add_argument(
         "--config",
         type=Path,
