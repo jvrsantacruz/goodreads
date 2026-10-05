@@ -11,6 +11,7 @@ python goodreads.py list read
 python goodreads.py list want
 python goodreads.py render read --listas-dir Listas/ --books-dir Libros/
 python goodreads.py render want --listas-dir Listas/ --books-dir Libros/
+SHELFMARK_API_KEY=... python goodreads.py follow want
 ```
 
 ### Run with Docker
@@ -22,9 +23,17 @@ python goodreads.py render want --listas-dir Listas/ --books-dir Libros/
 
 ### Config
 `config.json` (git-ignored) must exist with Goodreads RSS feed URLs, or pass `--config-json '{"read_url":...,"want_url":...}'` on the CLI.
+Options go after the subcommand: `list read --config-json ...`.
+
+`follow` also needs `shelfmark_url` and `shelfmark_user_id` in the config, and the
+`SHELFMARK_API_KEY` environment variable. Both keys are optional, so the Action's config is
+unchanged.
 
 ### Tests
-There are no automated tests.
+```sh
+make test   # pytest, through uv
+make lint   # ruff and vulture
+```
 
 ## Architecture
 
@@ -36,9 +45,18 @@ The entire application is a single file: `goodreads.py`.
 3. Cache result as `data/books-{read|want}-{YYYY-MM-DD}.json` (one file per day, never overwritten)
 4. On subsequent runs the same day, read from cache instead of fetching
 
-**Two output modes:**
+**Three modes:**
 - `list` — prints books as JSON to stdout
 - `render` — updates Markdown files in `--books-dir` and writes summary lists to `--listas-dir`
+- `follow` — files each book not filed yet as an ask in Shelfmark's request queue
+
+**Follow behavior** (spec: `goodreads-intent` in the tech vault):
+- One `POST /api/requests` per book, as Shelfmark's `manual` book, on behalf of `shelfmark_user_id`
+- Filed Goodreads book IDs are kept in `data/filed-{id}.json`, written after each ask Shelfmark takes
+- An ask Shelfmark already holds pending (`duplicate_pending_request`) is recorded as filed
+- A refused ask is not recorded, so the next run retries it; the run then exits 1
+- A failed feed page raises, so a partial shelf files nothing
+- One summary line per run: `follow want: seen=N filed=N pending=N refused=N`
 
 **Render behavior:**
 - Only updates `.md` files that already exist in `--books-dir`; does not create new book files

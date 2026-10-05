@@ -7,6 +7,7 @@ See: https://github.com/maria-antoniak/goodreads-scraper/blob/master/get_books.p
 import argparse
 import io
 import json
+import os
 import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass
@@ -50,10 +51,17 @@ class Event:
         return self.status == "END_ELEMENT"
 
 
+class FollowConfigError(Exception):
+    pass
+
+
 @dataclass
 class Config:
     read_url: str
     want_url: str
+    # Only for `follow`: where Shelfmark is, and who the asks are filed for.
+    shelfmark_url: str | None = None
+    shelfmark_user_id: int | None = None
 
 
 @dataclass
@@ -225,6 +233,96 @@ def get_list(url: str, id: str, data_dir: Path) -> list[Book]:
     return books
 
 
+class Shelfmark:
+    """Files asks in Shelfmark's request queue. Its one endpoint: POST /api/requests."""
+
+    def __init__(self, url: str, api_key: str, user_id: int):
+        self.url = url.rstrip("/") + "/api/requests"
+        self.api_key = api_key
+        self.user_id = user_id
+
+    def ask(self, book: Book) -> tuple[bool, str]:
+        """Return whether the ask is in the queue, and Shelfmark's reason when not taken."""
+        try:
+            r = requests.post(
+                self.url,
+                json=book_ask(book, self.user_id),
+                headers={"X-Api-Key": self.api_key},
+                timeout=30,
+            )
+        except requests.RequestException as error:
+            return False, str(error)
+        if r.status_code == 201:
+            return True, "filed"
+        try:
+            code = r.json().get("code") or r.json().get("error")
+        except ValueError:
+            code = r.text[:200]
+        # Asked before and still pending: it is in the queue already.
+        if code == "duplicate_pending_request":
+            return True, code
+        return False, f"{r.status_code} {code}"
+
+
+def book_ask(book: Book, user_id: int) -> dict:
+    """A book as Shelfmark's `manual` book: searched by title and author, no metadata lookup."""
+    return {
+        "book_data": {
+            "title": book.title,
+            "author": book.author,
+            "year": str(book.year) if book.year else None,
+            "isbn": book.isbn,
+            "content_type": "ebook",
+            "provider": "manual",
+            "provider_id": book.book_id,
+            "source_url": book.url,
+        },
+        "context": {"content_type": "ebook", "request_level": "book"},
+        "on_behalf_of_user_id": user_id,
+        "note": "Goodreads",
+    }
+
+
+def get_filed_file(id: str, data_dir: Path) -> Path:
+    return data_dir / f"filed-{id}.json"
+
+
+def get_filed(id: str, data_dir: Path) -> set[str]:
+    path = get_filed_file(id, data_dir)
+    if not path.exists():
+        return set()
+    with path.open() as stream:
+        return set(json.load(stream))
+
+
+def set_filed(id: str, data_dir: Path, filed: set[str]):
+    path = get_filed_file(id, data_dir)
+    partial = path.with_suffix(".tmp")
+    with partial.open("w") as stream:
+        json.dump(sorted(filed), stream)
+    partial.replace(path)
+
+
+def not_filed(books: list[Book], filed: set[str]) -> list[Book]:
+    return [book for book in books if book.book_id not in filed]
+
+
+def follow(books: list[Book], id: str, data_dir: Path, shelfmark: Shelfmark) -> dict:
+    """File every book not filed yet, one ask each, recording each one Shelfmark took."""
+    filed = get_filed(id, data_dir)
+    counts = {"seen": len(books), "filed": 0, "pending": 0, "refused": 0}
+    for book in not_filed(books, filed):
+        taken, reason = shelfmark.ask(book)
+        if not taken:
+            counts["refused"] += 1
+            print(f"refused {book.book_id} {book.title!r}: {reason}", file=sys.stderr)
+            continue
+        counts["filed" if reason == "filed" else "pending"] += 1
+        filed.add(book.book_id)
+        set_filed(id, data_dir, filed)
+    return counts
+
+
 def write_ratings_list(books: list[Book], path: Path, dir: Path):
     with path.open("w") as stream:
         print(
@@ -330,6 +428,21 @@ def render_list(url: str, name: str, id: str, args):
             save_file(book_data, "#libro", path)
 
 
+def follow_list(url: str, id: str, args):
+    config = args.config
+    if not config.shelfmark_url or not config.shelfmark_user_id:
+        raise FollowConfigError("follow needs shelfmark_url and shelfmark_user_id in the config")
+    api_key = os.environ.get("SHELFMARK_API_KEY")
+    if not api_key:
+        raise FollowConfigError("follow needs SHELFMARK_API_KEY in the environment")
+
+    books = get_list(url, id, args.data_dir)
+    shelfmark = Shelfmark(config.shelfmark_url, api_key, config.shelfmark_user_id)
+    counts = follow(books, id, args.data_dir, shelfmark)
+    print(f"follow {id}: " + " ".join(f"{k}={v}" for k, v in counts.items()))
+    return 1 if counts["refused"] else 0
+
+
 def list_read_command(args):
     print_list(args.config.read_url, "read", args)
 
@@ -344,6 +457,10 @@ def render_read_command(args):
 
 def render_want_command(args):
     render_list(args.config.want_url, "Want to Read.md", "want", args)
+
+
+def follow_want_command(args):
+    return follow_list(args.config.want_url, "want", args)
 
 
 def parse_args(parser):
@@ -403,6 +520,13 @@ def main():
 
     render_want_parser = render_subparsers.add_parser("want", parents=[common_options])
     render_want_parser.set_defaults(callback=render_want_command)
+
+    follow_parser = subparsers.add_parser("follow", parents=[common_options])
+    follow_parser.set_defaults(callback=partial(help, follow_parser))
+    follow_subparsers = follow_parser.add_subparsers(title="subcommands")
+
+    follow_want_parser = follow_subparsers.add_parser("want", parents=[common_options])
+    follow_want_parser.set_defaults(callback=follow_want_command)
 
     args = parse_args(parser)
     result = args.callback(args)
