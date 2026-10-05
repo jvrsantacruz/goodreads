@@ -201,7 +201,9 @@ def get_page(url: str, page: int) -> list[Book]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36"
     }
-    r = requests.get(url, params=dict(page=page), headers=headers)
+    r = requests.get(url, params=dict(page=page), headers=headers, timeout=30)
+    # A failed page must not read as the end of the shelf.
+    r.raise_for_status()
     return list(parse_list(r.text))
 
 
