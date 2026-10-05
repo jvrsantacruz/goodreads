@@ -84,6 +84,16 @@ def test_an_ask_already_pending_is_recorded(tmp_path):
     assert_that(get_filed("want", tmp_path), equal_to({"1"}))
 
 
+def test_at_the_limit_the_rest_wait_for_a_later_run(tmp_path):
+    shelfmark = FakeShelfmark({"2": (False, goodreads.MAX_PENDING_REACHED)})
+
+    counts = follow([make_book(i) for i in "1234"], "want", tmp_path, shelfmark)
+
+    assert_that(counts, has_entries(filed=1, refused=0, deferred=3))
+    assert_that(shelfmark.asked, equal_to(["1", "2"]))
+    assert_that(get_filed("want", tmp_path), equal_to({"1"}))
+
+
 def test_an_empty_shelf_files_nothing(tmp_path):
     counts = follow([], "want", tmp_path, FakeShelfmark())
 

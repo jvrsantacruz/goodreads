@@ -233,6 +233,10 @@ def get_list(url: str, id: str, data_dir: Path) -> list[Book]:
     return books
 
 
+# Shelfmark's answer once the person has as many waiting asks as they may.
+MAX_PENDING_REACHED = "409 max_pending_reached"
+
+
 class Shelfmark:
     """Files asks in Shelfmark's request queue. Its one endpoint: POST /api/requests."""
 
@@ -308,11 +312,18 @@ def not_filed(books: list[Book], filed: set[str]) -> list[Book]:
 
 
 def follow(books: list[Book], id: str, data_dir: Path, shelfmark: Shelfmark) -> dict:
-    """File every book not filed yet, one ask each, recording each one Shelfmark took."""
+    """File every book not filed yet, one ask each, recording each one Shelfmark took.
+
+    At the person's limit of waiting asks it stops: the rest wait for a later run.
+    """
     filed = get_filed(id, data_dir)
-    counts = {"seen": len(books), "filed": 0, "pending": 0, "refused": 0}
-    for book in not_filed(books, filed):
+    counts = {"seen": len(books), "filed": 0, "pending": 0, "refused": 0, "deferred": 0}
+    remaining = not_filed(books, filed)
+    for index, book in enumerate(remaining):
         taken, reason = shelfmark.ask(book)
+        if reason == MAX_PENDING_REACHED:
+            counts["deferred"] = len(remaining) - index
+            break
         if not taken:
             counts["refused"] += 1
             print(f"refused {book.book_id} {book.title!r}: {reason}", file=sys.stderr)

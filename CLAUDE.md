@@ -55,8 +55,9 @@ The entire application is a single file: `goodreads.py`.
 - Filed Goodreads book IDs are kept in `data/filed-{id}.json`, written after each ask Shelfmark takes
 - An ask Shelfmark already holds pending (`duplicate_pending_request`) is recorded as filed
 - A refused ask is not recorded, so the next run retries it; the run then exits 1
+- At the person's limit of waiting asks (`409 max_pending_reached`) the run stops and exits 0; the rest are `deferred` to a later run
 - A failed feed page raises, so a partial shelf files nothing
-- One summary line per run: `follow want: seen=N filed=N pending=N refused=N`
+- One summary line per run: `follow want: seen=N filed=N pending=N refused=N deferred=N`
 
 **Render behavior:**
 - Only updates `.md` files that already exist in `--books-dir`; does not create new book files
