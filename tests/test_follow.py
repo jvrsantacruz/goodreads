@@ -112,3 +112,13 @@ def test_a_failed_page_is_not_the_end_of_the_shelf(monkeypatch):
 
     with pytest.raises(goodreads.requests.HTTPError):
         goodreads.get_pages("https://www.goodreads.com/review/list_rss/1")
+
+
+def test_list_want_reads_the_want_shelf(monkeypatch):
+    seen = []
+    monkeypatch.setattr(goodreads, "print_list", lambda url, *_: seen.append(url))
+    args = type("Args", (), {"config": Config(read_url="read", want_url="want")})()
+
+    goodreads.list_want_command(args)
+
+    assert_that(seen, equal_to(["want"]))

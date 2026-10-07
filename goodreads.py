@@ -459,7 +459,7 @@ def list_read_command(args):
 
 
 def list_want_command(args):
-    print_list(args.config.read_url, "want", args)
+    print_list(args.config.want_url, "want", args)
 
 
 def render_read_command(args):
