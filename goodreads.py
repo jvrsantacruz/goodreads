@@ -8,50 +8,29 @@ import argparse
 import io
 import json
 import os
+import random
+import re
 import sys
-from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from functools import cached_property, partial
-from itertools import count, takewhile
+from itertools import takewhile
 from pathlib import Path
-from typing import Any, Iterable, Union
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from xml.dom.minidom import Document, Element, Text
-from xml.dom.pulldom import parse
 
 import requests
 import ruamel.yaml
 from bs4 import BeautifulSoup
-
-
-@dataclass
-class Event:
-    status: str
-    node: Union[Document, Element, Text]
-
-    @cached_property
-    def name(self) -> str:
-        return self.node.nodeName
-
-    @cached_property
-    def value(self) -> str:
-        return self.node.nodeValue
-
-    @cached_property
-    def is_text(self) -> bool:
-        return self.status == "CHARACTERS"
-
-    @cached_property
-    def is_start(self) -> bool:
-        return self.status == "START_ELEMENT"
-
-    @cached_property
-    def is_end(self) -> bool:
-        return self.status == "END_ELEMENT"
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 
 class FollowConfigError(Exception):
+    pass
+
+
+class ShelfError(Exception):
     pass
 
 
@@ -76,25 +55,6 @@ class Book:
     read_date: datetime
     rating: str
     year: str
-
-    @classmethod
-    def from_goodreads(cls, entry: dict[str, str]):
-        return cls(
-            **{
-                "title": entry["title"],
-                "url": strip_utm(entry["link"]),
-                "book_id": entry["book_id"],
-                "pages": to_int(entry["num_pages"]),
-                "author": entry["author_name"],
-                "isbn": entry["isbn"].strip() if entry["isbn"].strip() else None,
-                "read_date": to_date(entry["pubDate"])
-                or to_date(entry["user_date_added"])
-                or to_date(entry["user_date_created"]),
-                "rating": to_float(entry["average_rating"]),
-                "year": to_int(entry["book_published"]),
-                "description": entry["book_description"],
-            }
-        )
 
     @cached_property
     def name(self, table=str.maketrans({":": "", "/": "-", "\\": ""})) -> str:
@@ -123,55 +83,6 @@ def strip_utm(url: str) -> str:
         if key not in ("utm_medium", "utm_source")
     ]
     return urlunsplit(parts._replace(query=urlencode(query)))
-
-
-def to_date(text: str) -> datetime | None:
-    """Fri, 30 Nov 2018 07:08:00 -0800"""
-    try:
-        return datetime.strptime(text, "%a, %d %b %Y %H:%M:%S %z")
-    except ValueError:
-        return None
-
-
-def to_int(text: str) -> int | None:
-    try:
-        return int(text)
-    except ValueError:
-        return None
-
-
-def to_float(text: str) -> float | None:
-    try:
-        return float(text)
-    except ValueError:
-        return None
-
-
-def parse_item(events: Iterable[Event]) -> dict[str, str]:
-    first(e for e in events if e.name == "item" and e.is_start)
-    current_name = None
-    item = defaultdict(str)
-    for event in takewhile(lambda e: not (e.name == "item"), events):
-        if event.is_start:
-            current_name = event.name
-        elif event.is_text and current_name:
-            item[current_name] += event.value
-        elif event.is_end:
-            item[current_name] = BeautifulSoup(
-                item[current_name].strip(), "html.parser"
-            ).text
-            current_name = None
-
-    return item
-
-
-def parse_list(text: str):
-    events = (Event(status, node) for status, node in parse(io.StringIO(text)))
-    for event in takewhile(lambda e: not (e.is_end and e.name == "channel"), events):
-        item = parse_item(events)
-        if not item.get("book_id"):
-            continue
-        yield Book.from_goodreads(item)
 
 
 def json_deserializer(data: dict) -> dict:
@@ -205,30 +116,147 @@ def set_cached(id: str, data_dir: Path, books: list[Book]):
         json.dump([asdict(book) for book in books], stream, default=str)
 
 
-def get_page(url: str, page: int) -> list[Book]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36"
-    }
-    r = requests.get(url, params=dict(page=page), headers=headers, timeout=30)
-    # A failed page must not read as the end of the shelf.
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"
+}
+# Goodreads retired the shelf RSS feeds on 2026-10-28. What is left without signing in:
+# the profile, which counts each shelf, and the shelf widget, at most 100 books a call.
+PROFILE_URL = "https://www.goodreads.com/user/show/{user}"
+WIDGET_URL = "https://www.goodreads.com/review/custom_widget/{user}.shelf"
+AUTOCOMPLETE_URL = "https://www.goodreads.com/book/auto_complete"
+# After date added both ways, each sort shows another hundred; their union is the shelf.
+OTHER_SORTS = [
+    (sort, order)
+    for sort in ("date_read", "title", "author", "rating", "avg_rating", "date_pub", "num_pages", "position", "random")
+    for order in "da"
+]
+
+
+# A slow or busy answer is tried again, after 2, 4 and 8 seconds.
+session = requests.Session()
+session.mount("https://", HTTPAdapter(max_retries=Retry(total=3, backoff_factor=2, status_forcelist=(429, 500, 502, 503, 504))))
+
+
+def get(url: str, **params) -> requests.Response:
+    r = session.get(url, params=params, headers=HEADERS, timeout=30)
     r.raise_for_status()
-    return list(parse_list(r.text))
+    return r
 
 
-def get_pages(url: str) -> list[Book]:
-    all_books = []
-    for page in count(1):
-        books = get_page(url, page=page)
-        if not books:
+def shelf_of(url: str) -> tuple[str, str]:
+    """The user and shelf of a shelf URL, .../list_rss/<user>?shelf=<shelf> or .../list/<user>?shelf=."""
+    parts = urlsplit(url)
+    return parts.path.rstrip("/").rsplit("/", 1)[1], dict(parse_qsl(parts.query))["shelf"]
+
+
+def get_shelf_size(user: str, shelf: str) -> int:
+    text = get(PROFILE_URL.format(user=user)).text
+    name = re.escape(shelf)
+    match = re.search(rf'shelf={name}"[^>]*>\s*{name}&lrm;\s*\((\d+)\)', text)
+    if not match:
+        raise ShelfError(f"no count of {shelf} on the profile of {user}")
+    return int(match[1])
+
+
+def get_widget(user: str, shelf: str, sort: str, order: str) -> list[dict]:
+    """A shelf's books as the widget shows them: title, author, review URL, book ID from the cover."""
+    # Goodreads caches a widget by its id whatever the shelf: a fresh id each call.
+    r = get(
+        WIDGET_URL.format(user=user),
+        shelf=shelf, sort=sort, order=order, num_books=100,
+        show_author=1, show_cover=1, show_title=1, widget_id=random.randrange(10**9),
+    )
+    code = re.search(r"var widget_code = '((?:[^'\\]|\\.)*)'", r.content.decode())
+    if not code:
+        raise ShelfError(f"no widget in the answer for {shelf}")
+    html = re.sub(r"\\(.)", lambda m: "\n" if m[1] in "nr" else m[1], code[1])
+    soup = BeautifulSoup(html, "html.parser")
+    if not soup.find("a", href=re.compile(rf"[?&]shelf={re.escape(shelf)}(&|$)")):
+        raise ShelfError(f"the widget served another shelf than {shelf}")
+    entries = []
+    for item in soup.select("[class^=gr_custom_each_container_]"):
+        link = item.select_one("[class^=gr_custom_title_] a")
+        cover = re.search(r"/(\d+)\.[^/]*$", item.img["src"]) if item.img else None
+        entries.append({
+            "title": link.text.strip(),
+            "url": strip_utm(link["href"]),
+            "author": item.select_one("[class^=gr_custom_author_] a").text.strip(),
+            "book_id": cover[1] if cover else None,
+        })
+    return entries
+
+
+def search_book_id(title: str, author: str) -> str | None:
+    """A book without a cover has no ID in the widget: Goodreads' own search finds it."""
+    hits = get(AUTOCOMPLETE_URL, format="json", q=f"{title} {author}").json()
+    return first(hit["bookId"] for hit in hits if hit["author"]["name"] == author)
+
+
+def get_shelf(url: str, known: dict[str, Book]) -> list[Book]:
+    """Every book of a shelf, newest added first, filled from the books an earlier fetch saw."""
+    user, shelf = shelf_of(url)
+    size = get_shelf_size(user, shelf)
+    newest = get_widget(user, shelf, "date_added", "d")
+    oldest = get_widget(user, shelf, "date_added", "a")[::-1]
+    found = {entry["url"] for entry in newest + oldest}
+    middle = {}
+    for sort, order in OTHER_SORTS:
+        if len(found) + len(middle) >= size:
             break
-        all_books += books
-    return all_books
+        for entry in get_widget(user, shelf, sort, order):
+            if entry["url"] not in found:
+                middle.setdefault(entry["url"], entry)
+    entries = {entry["url"]: entry for entry in newest + list(middle.values()) + oldest}
+    # A lost book must not read as one taken off the shelf.
+    if len(entries) != size:
+        raise ShelfError(f"{shelf}: the widget showed {len(entries)} of {size} books")
+    books = [to_book(entry, known.get(entry["url"])) for entry in entries.values()]
+    # Newest added first, as the feed had them; a book first seen now goes on top. With no
+    # earlier fetch the order is the widget's, and render takes it from the previous list.
+    books.sort(key=lambda book: book.read_date, reverse=True)
+    return books
+
+
+def to_book(entry: dict, known: Book | None) -> Book:
+    """The widget gives no ISBN, pages, year, description or date: an earlier fetch's,
+    else none, the date the one of this first sight."""
+    if known:
+        return replace(
+            known,
+            # The widget cuts a trailing (series) or (edition) off the title.
+            title=known.title if known.title.startswith(entry["title"]) else entry["title"],
+            author=entry["author"],
+            book_id=entry["book_id"] or known.book_id,
+            read_date=known.read_date or datetime.now().astimezone(),
+        )
+    return Book(
+        title=entry["title"],
+        url=entry["url"],
+        book_id=entry["book_id"] or search_book_id(entry["title"], entry["author"]),
+        description=None,
+        pages=None,
+        author=entry["author"],
+        isbn=None,
+        read_date=datetime.now().astimezone(),
+        rating=None,
+        year=None,
+    )
+
+
+def get_known(id: str, data_dir: Path) -> dict[str, Book]:
+    """Every book an earlier fetch of the shelf saw, by its review URL, the newest kept."""
+    known = {}
+    for cache in sorted(data_dir.glob(f"books-{id}-*.json")):
+        with cache.open() as stream:
+            for book in json.load(stream, object_hook=json_deserializer):
+                known[book["url"]] = Book(**book)
+    return known
 
 
 def get_list(url: str, id: str, data_dir: Path) -> list[Book]:
     if cached := get_cached(id, data_dir):
         return cached
-    books = get_pages(url)
+    books = get_shelf(url, get_known(id, data_dir))
     set_cached(id, data_dir, books)
     return books
 
@@ -320,6 +348,10 @@ def follow(books: list[Book], id: str, data_dir: Path, shelfmark: Shelfmark) -> 
     counts = {"seen": len(books), "filed": 0, "pending": 0, "refused": 0, "deferred": 0}
     remaining = not_filed(books, filed)
     for index, book in enumerate(remaining):
+        if not book.book_id:
+            counts["refused"] += 1
+            print(f"refused {book.title!r}: no Goodreads book ID", file=sys.stderr)
+            continue
         taken, reason = shelfmark.ask(book)
         if reason == MAX_PENDING_REACHED:
             counts["deferred"] = len(remaining) - index
@@ -430,13 +462,32 @@ def print_list(url: str, id: str, args):
     )
 
 
+LIST_LINE = re.compile(r"^- \[\[(\d{4}-\d{2}-\d{2})\]\] ᐧ \[\[[^|]*\|(.*)\]\]$", re.MULTILINE)
+
+
+def get_previous_list(path: Path) -> dict[str, datetime]:
+    """The date of each book name in the list a previous render wrote, in its order."""
+    if not path.exists():
+        return {}
+    return {name: datetime.fromisoformat(date) for date, name in LIST_LINE.findall(path.read_text())}
+
+
 def render_list(url: str, name: str, id: str, args):
     books = get_list(url, id, args.data_dir)
+    # The widget has no dates: a book keeps the date and place the list gave it, a new
+    # one goes first, dated the run that first saw it.
+    previous = get_previous_list(args.listas_dir / name)
+    order = {book_name: index for index, book_name in enumerate(previous)}
+    books = [replace(book, read_date=previous.get(book.name, book.read_date)) for book in books]
+    books.sort(key=lambda book: order.get(book.name, -1))
     write_ratings_list(books, args.listas_dir / name, args.books_dir)
     for book in books:
         path = args.books_dir / (book.name + ".md")
         if path.exists():
-            book_data = book.to_dict()
+            # What the widget lacks stays as the note has it.
+            book_data = {key: value for key, value in book.to_dict().items() if value is not None}
+            if extract_yaml_doc(path).get("title", "").startswith(book.title):
+                del book_data["title"]
             book_data["author"] = f"[[Autores/{book.author}|{book.author}]]"
             book_data["read_date"] = book.read_date.date().isoformat()
             save_file(book_data, "#libro", path)

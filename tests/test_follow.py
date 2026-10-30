@@ -101,17 +101,16 @@ def test_an_empty_shelf_files_nothing(tmp_path):
     assert_that(get_filed("want", tmp_path), empty())
 
 
-def test_a_failed_page_is_not_the_end_of_the_shelf(monkeypatch):
-    class Failed:
-        text = ""
+def test_a_shelf_the_widget_shows_in_part_is_not_the_shelf(monkeypatch):
+    monkeypatch.setattr(goodreads, "get_shelf_size", lambda user, shelf: 3)
+    monkeypatch.setattr(
+        goodreads,
+        "get_widget",
+        lambda *_: [{"title": "Dune", "url": "u", "author": "Frank Herbert", "book_id": "1"}],
+    )
 
-        def raise_for_status(self):
-            raise goodreads.requests.HTTPError("503")
-
-    monkeypatch.setattr(goodreads.requests, "get", lambda *_, **__: Failed())
-
-    with pytest.raises(goodreads.requests.HTTPError):
-        goodreads.get_pages("https://www.goodreads.com/review/list_rss/1")
+    with pytest.raises(goodreads.ShelfError):
+        goodreads.get_shelf("https://www.goodreads.com/review/list_rss/1?shelf=to-read", {})
 
 
 def test_list_want_reads_the_want_shelf(monkeypatch):

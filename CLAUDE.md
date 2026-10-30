@@ -22,7 +22,7 @@ SHELFMARK_API_KEY=... python goodreads.py follow want
 ```
 
 ### Config
-`config.json` (git-ignored) must exist with Goodreads RSS feed URLs, or pass `--config-json '{"read_url":...,"want_url":...}'` on the CLI.
+`config.json` (git-ignored) must exist with a Goodreads shelf URL each, `.../list_rss/<user>?shelf=<shelf>` or `.../review/list/<user>?shelf=<shelf>`; only the user and shelf are read, or pass `--config-json '{"read_url":...,"want_url":...}'` on the CLI.
 Options go after the subcommand: `list read --config-json ...`.
 
 `follow` also needs `shelfmark_url` and `shelfmark_user_id` in the config, and the
@@ -40,10 +40,13 @@ make lint   # ruff and vulture
 The entire application is a single file: `goodreads.py`.
 
 **Data flow:**
-1. Fetch Goodreads RSS feed pages (paginated) via `requests`
-2. Parse XML using `xml.dom.pulldom` (streaming pull parser); strip HTML from field values with BeautifulSoup
-3. Cache result as `data/books-{read|want}-{YYYY-MM-DD}.json` (one file per day, never overwritten)
-4. On subsequent runs the same day, read from cache instead of fetching
+1. Goodreads retired the shelf RSS feeds on 2026-10-28; nothing else lists a shelf without signing in except the profile, which counts each shelf, and the shelf widget, `/review/custom_widget/<user>`
+2. The widget gives at most 100 books a call, and only title, author, review URL and the book ID in the cover's file name. It is cached by `widget_id`, so each call takes a fresh one. Calls by date added both ways, then other sorts, until their union reaches the profile's count; short of it, the fetch raises
+3. ISBN, pages, year, description and date come from the same book in earlier caches, by review URL; a book seen for the first time is dated that run
+4. Books newest first by date. Cache result as `data/books-{read|want}-{YYYY-MM-DD}.json` (one file per day, never overwritten)
+5. On subsequent runs the same day, read from cache instead of fetching
+
+`render` takes each listed book's date and place from the list it wrote before, as the Action keeps no cache. A note whose header nothing changed is not rewritten.
 
 **Three modes:**
 - `list` — prints books as JSON to stdout
@@ -56,7 +59,8 @@ The entire application is a single file: `goodreads.py`.
 - An ask Shelfmark already holds pending (`duplicate_pending_request`) is recorded as filed
 - A refused ask is not recorded, so the next run retries it; the run then exits 1
 - At the person's limit of waiting asks (`409 max_pending_reached`) the run stops and exits 0; the rest are `deferred` to a later run
-- A failed feed page raises, so a partial shelf files nothing
+- A failed or partial shelf raises, so a partial shelf files nothing
+- A book with no Goodreads book ID is refused
 - One summary line per run: `follow want: seen=N filed=N pending=N refused=N deferred=N`
 
 **Render behavior:**
