@@ -371,7 +371,7 @@ def extract_yaml_doc(path: Path) -> dict:
             data = first(
                 yaml.load_all(
                     io.StringIO(
-                        "\n".join(takewhile(lambda line: line != "...\n", stream))
+                        "".join(takewhile(lambda line: line != "...\n", stream))
                     )
                 )
             )
@@ -408,6 +408,9 @@ def save_file(data: dict[str, Any], markers: str, path: Path):
         text = extract_file_text(path)
 
     data = previous_header | data
+    # Loading and dumping again is not lossless: a note nothing changed is left as it is.
+    if path.exists() and data == previous_header:
+        return
 
     with path.open("w") as stream:
         yaml = make_yaml_parser()
