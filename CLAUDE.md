@@ -42,7 +42,7 @@ The entire application is a single file: `goodreads.py`.
 **Data flow:**
 1. Goodreads retired the shelf RSS feeds on 2026-10-28; nothing else lists a shelf without signing in except the profile, which counts each shelf, and the shelf widget, `/review/custom_widget/<user>`
 2. The widget gives at most 100 books a call, and only title, author, review URL and the book ID in the cover's file name. It is cached by `widget_id`, so each call takes a fresh one. Calls by date added both ways, then other sorts, until their union reaches the profile's count; short of it, the fetch raises
-3. ISBN, pages, year, description and date come from the same book in earlier caches, by review URL; a book seen for the first time is dated that run
+3. ISBN, pages, year, description and date come from the same book in earlier caches, by review URL; a book seen for the first time is dated that run. ISBN, pages and year still missing, for a note or an ask, come from the public book page, `/book/show/<id>`; it challenges a burst as a bot, so it is read only for what is missing and a challenge leaves the fields empty
 4. Books newest first by date. Cache result as `data/books-{read|want}-{YYYY-MM-DD}.json` (one file per day, never overwritten)
 5. On subsequent runs the same day, read from cache instead of fetching
 

@@ -58,3 +58,26 @@ def test_the_previous_list_gives_each_name_its_date_in_order(tmp_path):
     path.write_text("Leidos 2 libros (x)\n\n- [[2026-09-21]] ᐧ [[libros/B|B]]\n- [[2026-08-30]] ᐧ [[libros/A|A]]\n")
 
     assert_that(list(get_previous_list(path).items()), contains_exactly(("B", datetime(2026, 9, 21)), ("A", datetime(2026, 8, 30))))
+
+
+# A book page's own data, cut to the keys read.
+BOOK_PAGE = """<script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"apolloState": {
+"Book:kca://book/1": {"legacyId": 4671, "title": "The Great Gatsby", "work": {"__ref": "Work:kca://work/1"},
+  "details": {"isbn": null, "isbn13": "9780743273565", "numPages": 180}},
+"Work:kca://work/1": {"details": {"publicationTime": -1411488000000}}}}}}</script>"""
+
+
+def test_a_book_page_gives_isbn_pages_and_first_year():
+    assert_that(goodreads.parse_book_page(BOOK_PAGE, "4671"), equal_to({"isbn": "9780743273565", "pages": 180, "year": 1925}))
+
+
+def test_a_challenged_book_page_gives_nothing():
+    assert_that(goodreads.parse_book_page("<html></html>", "4671"), equal_to({}))
+
+
+def test_details_fill_only_what_the_book_lacks():
+    book = Book("T", "u", "1", "d", 300, "A", None, datetime(2020, 1, 1, tzinfo=UTC), None, None)
+
+    filled = goodreads.fill(book, {"isbn": "123", "pages": 1, "year": None})
+
+    assert_that((filled.isbn, filled.pages, filled.year), equal_to(("123", 300, None)))

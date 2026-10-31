@@ -12,7 +12,7 @@ import random
 import re
 import sys
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from functools import cached_property, partial
 from itertools import takewhile
 from pathlib import Path
@@ -124,6 +124,8 @@ HEADERS = {
 PROFILE_URL = "https://www.goodreads.com/user/show/{user}"
 WIDGET_URL = "https://www.goodreads.com/review/custom_widget/{user}.shelf"
 AUTOCOMPLETE_URL = "https://www.goodreads.com/book/auto_complete"
+# Public, but behind a bot check that challenges a burst: read only for what is missing.
+BOOK_URL = "https://www.goodreads.com/book/show/{book_id}"
 # After date added both ways, each sort shows another hundred; their union is the shelf.
 OTHER_SORTS = [
     (sort, order)
@@ -190,6 +192,46 @@ def search_book_id(title: str, author: str) -> str | None:
     """A book without a cover has no ID in the widget: Goodreads' own search finds it."""
     hits = get(AUTOCOMPLETE_URL, format="json", q=f"{title} {author}").json()
     return first(hit["bookId"] for hit in hits if hit["author"]["name"] == author)
+
+
+def parse_book_page(html: str, book_id: str) -> dict:
+    """ISBN, pages and first publication year of a book page's own data."""
+    data = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    if not data:
+        return {}
+    state = json.loads(data[1])["props"]["pageProps"]["apolloState"]
+    book = first(v for k, v in state.items() if k.startswith("Book:") and v.get("legacyId") == int(book_id))
+    if not book:
+        return {}
+    details = book.get("details") or {}
+    work = state.get((book.get("work") or {}).get("__ref"), {})
+    published = (work.get("details") or {}).get("publicationTime")
+    return {
+        "isbn": details.get("isbn") or details.get("isbn13"),
+        "pages": details.get("numPages"),
+        "year": (datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=published)).year if published is not None else None,
+    }
+
+
+def get_book_details(book_id: str | None) -> dict:
+    """What the widget lacks, from the book's public page; nothing when it cannot be read."""
+    if not book_id:
+        return {}
+    try:
+        r = get(BOOK_URL.format(book_id=book_id))
+    except requests.RequestException as error:
+        print(f"no details for {book_id}: {error}", file=sys.stderr)
+        return {}
+    details = parse_book_page(r.text, book_id)
+    if not details:
+        # A 202 with x-amzn-waf-action: challenge, when Goodreads takes it for a bot.
+        print(f"no details for {book_id}: {r.status_code} {r.headers.get('x-amzn-waf-action', '')}", file=sys.stderr)
+    return details
+
+
+def fill(book: Book, details: dict) -> Book:
+    """The book with the details it lacks; a value it has is kept."""
+    return replace(book, **{key: value for key, value in details.items() if getattr(book, key) is None and value is not None})
 
 
 def get_shelf(url: str, known: dict[str, Book]) -> list[Book]:
@@ -348,6 +390,8 @@ def follow(books: list[Book], id: str, data_dir: Path, shelfmark: Shelfmark) -> 
     counts = {"seen": len(books), "filed": 0, "pending": 0, "refused": 0, "deferred": 0}
     remaining = not_filed(books, filed)
     for index, book in enumerate(remaining):
+        if not book.isbn:
+            book = fill(book, get_book_details(book.book_id))
         if not book.book_id:
             counts["refused"] += 1
             print(f"refused {book.title!r}: no Goodreads book ID", file=sys.stderr)
@@ -485,8 +529,12 @@ def render_list(url: str, name: str, id: str, args):
         path = args.books_dir / (book.name + ".md")
         if path.exists():
             # What the widget lacks stays as the note has it.
+            header = extract_yaml_doc(path)
+            if not header.get("isbn") or header.get("pages") is None:
+                # ponytail: a book Goodreads has no ISBN for is asked again each run.
+                book = fill(book, {key: value for key, value in get_book_details(book.book_id).items() if header.get(key) is None})
             book_data = {key: value for key, value in book.to_dict().items() if value is not None}
-            if extract_yaml_doc(path).get("title", "").startswith(book.title):
+            if header.get("title", "").startswith(book.title):
                 del book_data["title"]
             book_data["author"] = f"[[Autores/{book.author}|{book.author}]]"
             book_data["read_date"] = book.read_date.date().isoformat()

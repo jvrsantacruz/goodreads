@@ -121,3 +121,16 @@ def test_list_want_reads_the_want_shelf(monkeypatch):
     goodreads.list_want_command(args)
 
     assert_that(seen, equal_to(["want"]))
+
+
+def test_a_book_without_isbn_is_asked_with_the_one_of_its_page(tmp_path, monkeypatch):
+    monkeypatch.setattr(goodreads, "get_book_details", lambda book_id: {"isbn": "84", "pages": 1, "year": 2})
+    asked = []
+    shelfmark = FakeShelfmark()
+    shelfmark.ask = lambda book: (asked.append(book.isbn), (True, "filed"))[1]
+    book = make_book("1")
+    book.isbn = None
+
+    follow([book], "want", tmp_path, shelfmark)
+
+    assert_that(asked, equal_to(["84"]))
