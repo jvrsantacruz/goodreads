@@ -123,14 +123,18 @@ def test_list_want_reads_the_want_shelf(monkeypatch):
     assert_that(seen, equal_to(["want"]))
 
 
-def test_a_book_without_isbn_is_asked_with_the_one_of_its_page(tmp_path, monkeypatch):
+
+def test_a_new_book_takes_isbn_pages_and_year_from_its_page(monkeypatch):
     monkeypatch.setattr(goodreads, "get_book_details", lambda book_id: {"isbn": "84", "pages": 1, "year": 2})
-    asked = []
-    shelfmark = FakeShelfmark()
-    shelfmark.ask = lambda book: (asked.append(book.isbn), (True, "filed"))[1]
-    book = make_book("1")
-    book.isbn = None
+    entry = {"title": "Dune", "url": "u", "author": "Frank Herbert", "book_id": "1"}
 
-    follow([book], "want", tmp_path, shelfmark)
+    book = goodreads.to_book(entry, None, details=True)
 
-    assert_that(asked, equal_to(["84"]))
+    assert_that((book.isbn, book.pages, book.year), equal_to(("84", 1, 2)))
+
+
+def test_a_known_book_reads_no_page(monkeypatch):
+    monkeypatch.setattr(goodreads, "get_book_details", lambda book_id: pytest.fail("read a page"))
+    entry = {"title": "Dune", "url": "u", "author": "Frank Herbert", "book_id": "1"}
+
+    goodreads.to_book(entry, make_book("1"), details=True)

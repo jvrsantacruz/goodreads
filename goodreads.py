@@ -124,7 +124,7 @@ HEADERS = {
 PROFILE_URL = "https://www.goodreads.com/user/show/{user}"
 WIDGET_URL = "https://www.goodreads.com/review/custom_widget/{user}.shelf"
 AUTOCOMPLETE_URL = "https://www.goodreads.com/book/auto_complete"
-# Public, but behind a bot check that challenges a burst: read only for what is missing.
+# Public, but behind a bot check that challenges a burst: read only for a new book to ask.
 BOOK_URL = "https://www.goodreads.com/book/show/{book_id}"
 # After date added both ways, each sort shows another hundred; their union is the shelf.
 OTHER_SORTS = [
@@ -234,7 +234,7 @@ def fill(book: Book, details: dict) -> Book:
     return replace(book, **{key: value for key, value in details.items() if getattr(book, key) is None and value is not None})
 
 
-def get_shelf(url: str, known: dict[str, Book]) -> list[Book]:
+def get_shelf(url: str, known: dict[str, Book], details: bool = False) -> list[Book]:
     """Every book of a shelf, newest added first, filled from the books an earlier fetch saw."""
     user, shelf = shelf_of(url)
     size = get_shelf_size(user, shelf)
@@ -252,16 +252,17 @@ def get_shelf(url: str, known: dict[str, Book]) -> list[Book]:
     # A lost book must not read as one taken off the shelf.
     if len(entries) != size:
         raise ShelfError(f"{shelf}: the widget showed {len(entries)} of {size} books")
-    books = [to_book(entry, known.get(entry["url"])) for entry in entries.values()]
+    books = [to_book(entry, known.get(entry["url"]), details) for entry in entries.values()]
     # Newest added first, as the feed had them; a book first seen now goes on top. With no
     # earlier fetch the order is the widget's, and render takes it from the previous list.
     books.sort(key=lambda book: book.read_date, reverse=True)
     return books
 
 
-def to_book(entry: dict, known: Book | None) -> Book:
+def to_book(entry: dict, known: Book | None, details: bool = False) -> Book:
     """The widget gives no ISBN, pages, year, description or date: an earlier fetch's,
-    else none, the date the one of this first sight."""
+    else, with `details`, ISBN, pages and year from the book page, and the date of this
+    first sight."""
     if known:
         return replace(
             known,
@@ -271,7 +272,7 @@ def to_book(entry: dict, known: Book | None) -> Book:
             book_id=entry["book_id"] or known.book_id,
             read_date=known.read_date or datetime.now().astimezone(),
         )
-    return Book(
+    book = Book(
         title=entry["title"],
         url=entry["url"],
         book_id=entry["book_id"] or search_book_id(entry["title"], entry["author"]),
@@ -283,6 +284,7 @@ def to_book(entry: dict, known: Book | None) -> Book:
         rating=None,
         year=None,
     )
+    return fill(book, get_book_details(book.book_id)) if details else book
 
 
 def get_known(id: str, data_dir: Path) -> dict[str, Book]:
@@ -295,10 +297,10 @@ def get_known(id: str, data_dir: Path) -> dict[str, Book]:
     return known
 
 
-def get_list(url: str, id: str, data_dir: Path) -> list[Book]:
+def get_list(url: str, id: str, data_dir: Path, details: bool = False) -> list[Book]:
     if cached := get_cached(id, data_dir):
         return cached
-    books = get_shelf(url, get_known(id, data_dir))
+    books = get_shelf(url, get_known(id, data_dir), details)
     set_cached(id, data_dir, books)
     return books
 
@@ -390,8 +392,6 @@ def follow(books: list[Book], id: str, data_dir: Path, shelfmark: Shelfmark) -> 
     counts = {"seen": len(books), "filed": 0, "pending": 0, "refused": 0, "deferred": 0}
     remaining = not_filed(books, filed)
     for index, book in enumerate(remaining):
-        if not book.isbn:
-            book = fill(book, get_book_details(book.book_id))
         if not book.book_id:
             counts["refused"] += 1
             print(f"refused {book.title!r}: no Goodreads book ID", file=sys.stderr)
@@ -530,9 +530,6 @@ def render_list(url: str, name: str, id: str, args):
         if path.exists():
             # What the widget lacks stays as the note has it.
             header = extract_yaml_doc(path)
-            if not header.get("isbn") or header.get("pages") is None:
-                # ponytail: a book Goodreads has no ISBN for is asked again each run.
-                book = fill(book, {key: value for key, value in get_book_details(book.book_id).items() if header.get(key) is None})
             book_data = {key: value for key, value in book.to_dict().items() if value is not None}
             if header.get("title", "").startswith(book.title):
                 del book_data["title"]
@@ -549,7 +546,9 @@ def follow_list(url: str, id: str, args):
     if not api_key:
         raise FollowConfigError("follow needs SHELFMARK_API_KEY in the environment")
 
-    books = get_list(url, id, args.data_dir)
+    # Only a book seen for the first time is read from its page: a known one keeps what
+    # the cache holds, so a run reads a page per new book and no more.
+    books = get_list(url, id, args.data_dir, details=True)
     shelfmark = Shelfmark(config.shelfmark_url, api_key, config.shelfmark_user_id)
     counts = follow(books, id, args.data_dir, shelfmark)
     print(f"follow {id}: " + " ".join(f"{k}={v}" for k, v in counts.items()))
